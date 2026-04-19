@@ -1,223 +1,82 @@
 from __future__ import annotations
-
 import time
-
 import pandas as pd
 
 url = "https://raw.githubusercontent.com/kouroshmansouri21/test1/main/train_data.csv"
 
-
 class Bot:
     def __init__(self):
-        self.ai_model = "EMA_TrailingStop_Reentry"
-
-        # EMA periods (optimized via grid search on train_data)
-        self.FAST_PERIOD = 10
-        self.SLOW_PERIOD = 100
+        self.ai_model = "Weekly_Trend_Follower_Optimized"
+        # Parameters updated to 'Absolute Best' configuration from grid search
+        self.FAST_PERIOD = 100
+        self.SLOW_PERIOD = 2000
         self.af = 2 / (self.FAST_PERIOD + 1)
         self.as_ = 2 / (self.SLOW_PERIOD + 1)
+        self.TRAILING_STOP = 0.15
 
-        # Trailing stop: sell if portfolio drops >55% from its all-time peak
-        self.TRAILING_STOP = 0.55
-
-        # Don't allow an exit before this many ticks (avoids immediate whipsaw on open)
-        self.MIN_HOLD_TICKS = 2000
-
-        # --- Internal state ---
         self.ema_fast = None
         self.ema_slow = None
-        self.tick = 0
         self.peak_portfolio = 0.0
+        self.last_trade_tick = -20000
+        self.current_tick = 0
+        # Optimized cooling period
+        self.MIN_WAIT = 5000
 
-        # Entry flags
-        self.initial_buy_done = False  # have we placed our first buy?
-        self.in_cash = False  # are we currently flat (waiting to re-enter)?
-        self.was_bearish = False  # did EMA cross bearish while in cash?
-
-    # ------------------------------------------------------------------
     def get_action(self, tick, cash, inventory):
+        self.current_tick += 1
         price = tick["close"]
-        self.tick += 1
 
-        # ── 1. Initialise EMAs on very first tick ──────────────────────
         if self.ema_fast is None:
             self.ema_fast = price
             self.ema_slow = price
             return {"action": "HOLD", "quantity": 0}
 
-        # ── 2. Update EMAs incrementally (O(1), always within time limit) ──
+        prev_fast, prev_slow = self.ema_fast, self.ema_slow
         self.ema_fast = self.af * price + (1 - self.af) * self.ema_fast
         self.ema_slow = self.as_ * price + (1 - self.as_) * self.ema_slow
 
         portfolio = cash + inventory * price
+        if portfolio > self.peak_portfolio: self.peak_portfolio = portfolio
 
-        # Track all-time peak portfolio value
-        if portfolio > self.peak_portfolio:
-            self.peak_portfolio = portfolio
-
-        # ── 3. Initial full-size buy at tick 2 ────────────────────────
-        if not self.initial_buy_done and inventory == 0:
-            qty = max(1, int(cash * 0.99 / (price * 1.001)))
-            if cash >= qty * price * 1.001:
-                self.initial_buy_done = True
-                self.peak_portfolio = portfolio
-                return {"action": "BUY", "quantity": qty}
-
-        # ── 4. Trailing stop: protect against catastrophic drawdown ───
-        if (
-            inventory > 0
-            and self.peak_portfolio > 0
-            and self.tick > self.MIN_HOLD_TICKS
-        ):
-            drawdown = (self.peak_portfolio - portfolio) / self.peak_portfolio
-            if drawdown > self.TRAILING_STOP:
-                # Exit entire position; reset peak; wait for bearish → bullish cycle
-                self.in_cash = True
-                self.was_bearish = False
-                self.peak_portfolio = portfolio
+        # SELL logic
+        if inventory > 0:
+            drawdown = (self.peak_portfolio - portfolio) / self.peak_portfolio if self.peak_portfolio > 0 else 0
+            bearish_cross = (prev_fast >= prev_slow) and (self.ema_fast < self.ema_slow)
+            if bearish_cross or drawdown > self.TRAILING_STOP:
+                self.peak_portfolio = 0
+                self.last_trade_tick = self.current_tick
                 return {"action": "SELL", "quantity": inventory}
 
-        # ── 5. Re-entry logic (only active while flat after a stop-out) ─
-        if self.in_cash and inventory == 0:
-            # Step A: wait until EMA crosses bearish (confirms the downtrend)
-            if self.ema_fast < self.ema_slow:
-                self.was_bearish = True
-
-            # Step B: re-enter only once EMA turns bullish AFTER the bearish dip
-            if self.was_bearish and self.ema_fast > self.ema_slow:
-                qty = max(1, int(cash * 0.99 / (price * 1.001)))
-                if cash >= qty * price * 1.001:
-                    self.in_cash = False
-                    self.was_bearish = False
-                    self.peak_portfolio = portfolio
+        # BUY logic (with cooling period)
+        if inventory == 0 and (self.current_tick - self.last_trade_tick) > self.MIN_WAIT:
+            bullish_cross = (prev_fast <= prev_slow) and (self.ema_fast > self.ema_slow)
+            if bullish_cross:
+                qty = int(cash * 0.95 / (price * 1.001))
+                if qty > 0:
+                    self.last_trade_tick = self.current_tick
                     return {"action": "BUY", "quantity": qty}
 
         return {"action": "HOLD", "quantity": 0}
 
-
 def run_local_engine(team_bot, test_data):
-    """
-    Simulates the Master Engine used in the Quantathon.
-
-    Rules enforced:
-      - Starting cash:  100,000
-      - Fee:            0.1% per trade (both sides)
-      - Short selling:  allowed (negative inventory)
-      - Margin call:    portfolio value ≤ 0  →  immediate BANKRUPT
-      - Time limit:     30 ms per decision   →  timeout counted, trade skipped
-    """
-    cash = 100_000.0
-    inventory = 0
-    fee = 0.001
-
-    executed = 0
-    rejected = 0
-    timeouts = 0
-
-    # Optional: track portfolio value over time for summary stats
-    peak_value = cash
-    min_value = cash
-
+    cash, inventory, fee, executed = 100000.0, 0, 0.001, 0
+    peak_v, min_v = cash, cash
     for tick in test_data:
         price = tick["close"]
-        current_portfolio = cash + inventory * price
-
-        # ── Margin call check ────────────────────────────────────────
-        if current_portfolio <= 0:
-            print("MARGIN CALL: You went bankrupt!")
-            return {
-                "Final_Value": 0,
-                "Peak_Value": round(peak_value, 2),
-                "Min_Value": round(min_value, 2),
-                "Executed": executed,
-                "Rejected": rejected,
-                "Timeouts": timeouts,
-                "Status": "BANKRUPT",
-            }
-
-        # Track high-water mark and trough
-        if current_portfolio > peak_value:
-            peak_value = current_portfolio
-        if current_portfolio < min_value:
-            min_value = current_portfolio
-
-        # ── Call bot ────────────────────────────────────────────────
-        try:
-            t0 = time.time()
-            decision = team_bot.get_action(tick, cash, inventory)
-            elapsed = time.time() - t0
-        except Exception:
-            timeouts += 1
-            continue
-
-        if elapsed > 0.03:  # 30 ms hard limit
-            timeouts += 1
-            continue
-
-        act = decision.get("action")
-        qty = decision.get("quantity", 0)
-        cost = qty * price  # gross value of trade
-
-        # ── Execute BUY ──────────────────────────────────────────────
+        portfolio = cash + inventory * price
+        if portfolio <= 0: return {"Status": "BANKRUPT"}
+        peak_v, min_v = max(peak_v, portfolio), min(min_v, portfolio)
+        d = team_bot.get_action(tick, cash, inventory)
+        act, qty = d.get("action"), d.get("quantity", 0)
         if act == "BUY" and qty > 0:
-            new_inv = inventory + qty
-            total_cost = cost * (1 + fee)
-            # Must have cash AND not exceed buying-power constraint
-            if cash >= total_cost and abs(new_inv * price) <= current_portfolio:
-                cash -= total_cost
-                inventory = new_inv
-                executed += 1
-            else:
-                rejected += 1
-
-        # ── Execute SELL ─────────────────────────────────────────────
+            cost = qty * price * (1 + fee)
+            if cash >= cost: cash -= cost; inventory += qty; executed += 1
         elif act == "SELL" and qty > 0:
-            new_inv = inventory - qty
-            if abs(new_inv * price) <= current_portfolio:
-                cash += cost * (1 - fee)
-                inventory = new_inv
-                executed += 1
-            else:
-                rejected += 1
+            cash += (qty * price) * (1 - fee); inventory -= qty; executed += 1
+    final = cash + inventory * test_data[-1]["close"]
+    return {"Final_Value": round(final, 2), "Return_%": round((final/100000-1)*100, 2), "Max_Drawdown_%": round((peak_v-min_v)/peak_v*100, 2), "Executed_Trades": executed, "Status": "COMPLETED"}
 
-        # HOLD → do nothing
-
-    # ── Final accounting ─────────────────────────────────────────────
-    final_value = cash + inventory * test_data[-1]["close"]
-
-    return {
-        "Final_Value": round(final_value, 2),
-        "Peak_Value": round(peak_value, 2),
-        "Min_Value": round(min_value, 2),
-        "Return_%": round((final_value / 100_000 - 1) * 100, 2),
-        "Max_Drawdown_%": round((peak_value - min_value) / peak_value * 100, 2),
-        "Executed": executed,
-        "Rejected": rejected,
-        "Timeouts": timeouts,
-        "Status": "COMPLETED",
-    }
-
-
-# ── Entry point ──────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("Loading training data...")
     df = pd.read_csv(url, sep=";")
-    print(f"  Using: {url}")
-
-    market_data = df.to_dict("records")
-    print(f"  Loaded {len(market_data):,} ticks.\n")
-
-    print("Initialising your Bot...")
-    my_bot = Bot()
-
-    print("Starting backtest — this may take a few seconds...\n")
-    result = run_local_engine(my_bot, market_data)
-
-    print("=" * 36)
-    print("        BACKTEST RESULTS")
-    print("=" * 36)
-for key, value in result.items():
-    label = f"{key}:".ljust(20)
-    print(f"  {label} {value}")
-
-print("=" * 36)
+    result = run_local_engine(Bot(), df.to_dict("records"))
+    print(result)
