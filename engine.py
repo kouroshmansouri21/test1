@@ -2,6 +2,8 @@ import time
 import math
 import pandas as pd
 
+# Define the URL for data loading if it's not defined elsewhere for testing
+url = "https://raw.githubusercontent.com/kouroshmansouri21/test1/main/train_data.csv"
 
 def calculate_metrics(equity_curve):
     if len(equity_curve) < 2:
@@ -141,7 +143,10 @@ if __name__ == "__main__":
         print(f"ERROR: Could not load data from URL: {e}")
         # If data cannot be loaded, prevent further execution to avoid NameError
         market_data = [] # Assign an empty list to prevent NameError, though backtest will fail gracefully
-        exit() # This exit() is more likely to work here in Colab.
+        #exit() # This exit() is more likely to work here in Colab. Commenting out exit() for better interactive experience.
+
+    # Import Bot from the other cell/file for testing
+    from __main__ import Bot # This assumes Bot class is in the global namespace of the notebook
 
     print("Initializing your Bot...")
     my_bot = Bot()
