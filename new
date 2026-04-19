@@ -219,4 +219,4 @@ if __name__ == "__main__":
     for key, value in result.items():
         label = f"{key}:".ljust(20)
         print(f"  {label} {value}")
-    p
+   print("=" * 36)
