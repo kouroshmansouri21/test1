@@ -1,7 +1,6 @@
 import time
 import math
 import pandas as pd
-import bot_ema
 
 
 def calculate_metrics(equity_curve):
@@ -134,15 +133,18 @@ def run_local_engine(team_bot, test_data):
 
 if __name__ == "__main__":
     print("Loading training data...")
+    # Load data directly from the URL
     try:
-        df = pd.read_csv("train_data.csv", sep=";")
+        df = pd.read_csv(url, sep=";")
         market_data = df.to_dict("records")
-    except FileNotFoundError:
-        print("ERROR: train_data.csv not found. Make sure it is in the same folder.")
-        exit()
+    except Exception as e:
+        print(f"ERROR: Could not load data from URL: {e}")
+        # If data cannot be loaded, prevent further execution to avoid NameError
+        market_data = [] # Assign an empty list to prevent NameError, though backtest will fail gracefully
+        exit() # This exit() is more likely to work here in Colab.
 
     print("Initializing your Bot...")
-    my_bot = bot_ema.Bot()
+    my_bot = Bot()
 
     print("Starting backtest (this might take a few seconds)...")
     result = run_local_engine(my_bot, market_data)
