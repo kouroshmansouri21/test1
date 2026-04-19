@@ -1,8 +1,98 @@
 import time
 import pandas as pd
-import bot_template
 
 url = "https://raw.githubusercontent.com/kouroshmansouri21/test1/main/train_data.csv"
+
+# --- Start of Bot class from 9FC_BCLYy1yd, adapted for Colab ---
+from pathlib import Path
+
+class Bot:
+    def __init__(self):
+        self.ai_model = "EMA_TrailingStop_Reentry"
+
+        # EMA periods (optimized via grid search on train_data)
+        self.FAST_PERIOD = 10
+        self.SLOW_PERIOD = 100
+        self.af = 2 / (self.FAST_PERIOD + 1)
+        self.as_ = 2 / (self.SLOW_PERIOD + 1)
+
+        # Trailing stop: sell if portfolio drops >55% from its all-time peak
+        self.TRAILING_STOP = 0.55
+
+        # Don't allow an exit before this many ticks (avoids immediate whipsaw on open)
+        self.MIN_HOLD_TICKS = 2000
+
+        # --- Internal state ---
+        self.ema_fast = None
+        self.ema_slow = None
+        self.tick = 0
+        self.peak_portfolio = 0.0
+
+        # Entry flags
+        self.initial_buy_done = False  # have we placed our first buy?
+        self.in_cash = False  # are we currently flat (waiting to re-enter)?
+        self.was_bearish = False  # did EMA cross bearish while in cash?
+
+    # ------------------------------------------------------------------
+    def get_action(self, tick, cash, inventory):
+        price = tick["close"]
+        self.tick += 1
+
+        # ── 1. Initialise EMAs on very first tick ──────────────────────
+        if self.ema_fast is None:
+            self.ema_fast = price
+            self.ema_slow = price
+            return {"action": "HOLD", "quantity": 0}
+
+        # ── 2. Update EMAs incrementally (O(1), always within time limit) ──
+        self.ema_fast = self.af * price + (1 - self.af) * self.ema_fast
+        self.ema_slow = self.as_ * price + (1 - self.as_) * self.ema_slow
+
+        portfolio = cash + inventory * price
+
+        # Track all-time peak portfolio value
+        if portfolio > self.peak_portfolio:
+            self.peak_portfolio = portfolio
+
+        # ── 3. Initial full-size buy at tick 2 ────────────────────────
+        if not self.initial_buy_done and inventory == 0:
+            qty = max(1, int(cash * 0.99 / (price * 1.001)))
+            if cash >= qty * price * 1.001:
+                self.initial_buy_done = True
+                self.peak_portfolio = portfolio
+                return {"action": "BUY", "quantity": qty}
+
+        # ── 4. Trailing stop: protect against catastrophic drawdown ───
+        if (
+            inventory > 0
+            and self.peak_portfolio > 0
+            and self.tick > self.MIN_HOLD_TICKS
+        ):
+            drawdown = (self.peak_portfolio - portfolio) / self.peak_portfolio
+            if drawdown > self.TRAILING_STOP:
+                # Exit entire position; reset peak; wait for bearish → bullish cycle
+                self.in_cash = True
+                self.was_bearish = False
+                self.peak_portfolio = portfolio
+                return {"action": "SELL", "quantity": inventory}
+
+        # ── 5. Re-entry logic (only active while flat after a stop-out) ─
+        if self.in_cash and inventory == 0:
+            # Step A: wait until EMA crosses bearish (confirms the downtrend)
+            if self.ema_fast < self.ema_slow:
+                self.was_bearish = True
+
+            # Step B: re-enter only once EMA turns bullish AFTER the bearish dip
+            if self.was_bearish and self.ema_fast > self.ema_slow:
+                qty = max(1, int(cash * 0.99 / (price * 1.001)))
+                if cash >= qty * price * 1.001:
+                    self.in_cash = False
+                    self.was_bearish = False
+                    self.peak_portfolio = portfolio
+                    return {"action": "BUY", "quantity": qty}
+
+        return {"action": "HOLD", "quantity": 0}
+# --- End of Bot class ---
 
 
 def run_local_engine(team_bot, test_data):
@@ -87,7 +177,7 @@ if __name__ == "__main__":
 
 
     print("Initializing your Bot...")
-    my_bot = bot_template.Bot()
+    my_bot = Bot()
 
 
     print("Starting backtest (this might take a few seconds)...")
@@ -100,4 +190,3 @@ if __name__ == "__main__":
     for key, value in result.items():
         print(f"{key}: {value}")
     print("="*30)
-
