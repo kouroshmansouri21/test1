@@ -1,80 +1,155 @@
 import time
+import math
 import pandas as pd
+import bot_ema
 
-url = "https://raw.githubusercontent.com/kouroshmansouri21/test1/main/train_data.csv"
 
-class Bot:
-    def __init__(self):
-        self.ai_model = "Weekly_Trend_Follower_Optimized"
-        # Updated to match the absolute best configuration
-        self.FAST_PERIOD = 100
-        self.SLOW_PERIOD = 2000
-        self.af = 2 / (self.FAST_PERIOD + 1)
-        self.as_ = 2 / (self.SLOW_PERIOD + 1)
-        self.TRAILING_STOP = 0.15
+def calculate_metrics(equity_curve):
+    if len(equity_curve) < 2:
+        return {
+            "Sharpe_Ratio": 0.0,
+            "Max_Drawdown": 0.0,
+            "Total_Return_Pct": 0.0,
+        }
 
-        self.ema_fast = None
-        self.ema_slow = None
-        self.peak_portfolio = 0.0
-        self.last_trade_tick = -20000
-        self.current_tick = 0
-        self.MIN_WAIT = 5000
+    returns = []
+    for i in range(1, len(equity_curve)):
+        prev_value = equity_curve[i - 1]
+        curr_value = equity_curve[i]
 
-    def get_action(self, tick, cash, inventory):
-        self.current_tick += 1
-        price = tick["close"]
+        if prev_value != 0:
+            returns.append((curr_value - prev_value) / prev_value)
 
-        if self.ema_fast is None:
-            self.ema_fast = price
-            self.ema_slow = price
-            return {"action": "HOLD", "quantity": 0}
+    if len(returns) == 0:
+        sharpe_ratio = 0.0
+    else:
+        mean_return = sum(returns) / len(returns)
+        variance = sum((r - mean_return) ** 2 for r in returns) / len(returns)
+        std_return = math.sqrt(variance)
 
-        prev_fast, prev_slow = self.ema_fast, self.ema_slow
-        self.ema_fast = self.af * price + (1 - self.af) * self.ema_fast
-        self.ema_slow = self.as_ * price + (1 - self.as_) * self.ema_slow
+        if std_return == 0:
+            sharpe_ratio = 0.0
+        else:
+            sharpe_ratio = (mean_return / std_return) * math.sqrt(len(returns))
 
-        portfolio = cash + inventory * price
-        if portfolio > self.peak_portfolio: self.peak_portfolio = portfolio
+    peak = equity_curve[0]
+    max_drawdown = 0.0
 
-        # SELL logic
-        if inventory > 0:
-            drawdown = (self.peak_portfolio - portfolio) / self.peak_portfolio if self.peak_portfolio > 0 else 0
-            bearish_cross = (prev_fast >= prev_slow) and (self.ema_fast < self.ema_slow)
-            if bearish_cross or drawdown > self.TRAILING_STOP:
-                self.peak_portfolio = 0
-                self.last_trade_tick = self.current_tick
-                return {"action": "SELL", "quantity": inventory}
+    for value in equity_curve:
+        if value > peak:
+            peak = value
 
-        # BUY logic
-        if inventory == 0 and (self.current_tick - self.last_trade_tick) > self.MIN_WAIT:
-            bullish_cross = (prev_fast <= prev_slow) and (self.ema_fast > self.ema_slow)
-            if bullish_cross:
-                qty = int(cash * 0.95 / (price * 1.001))
-                if qty > 0:
-                    self.last_trade_tick = self.current_tick
-                    return {"action": "BUY", "quantity": qty}
+        drawdown = (peak - value) / peak if peak != 0 else 0.0
+        if drawdown > max_drawdown:
+            max_drawdown = drawdown
 
-        return {"action": "HOLD", "quantity": 0}
+    total_return_pct = ((equity_curve[-1] - equity_curve[0]) / equity_curve[0]) * 100
+
+    return {
+        "Sharpe_Ratio": round(sharpe_ratio, 4),
+        "Max_Drawdown": round(max_drawdown, 4),
+        "Total_Return_Pct": round(total_return_pct, 2),
+    }
+
 
 def run_local_engine(team_bot, test_data):
-    cash, inventory, fee, executed = 100000.0, 0, 0.001, 0
-    peak_v, min_v = cash, cash
+    cash = 100000.0
+    inventory = 0
+    fee = 0.001
+    executed = 0
+    rejected = 0
+    timeouts = 0
+    equity_curve = []
+
     for tick in test_data:
         price = tick["close"]
-        portfolio = cash + inventory * price
-        if portfolio <= 0: return {"Status": "BANKRUPT"}
-        peak_v, min_v = max(peak_v, portfolio), min(min_v, portfolio)
-        d = team_bot.get_action(tick, cash, inventory)
-        act, qty = d.get("action"), d.get("quantity", 0)
+        current_buying_power = cash + (inventory * price)
+
+        equity_curve.append(current_buying_power)
+
+        if current_buying_power <= 0:
+            print("MARGIN CALL: You went bankrupt!")
+            metrics = calculate_metrics(equity_curve)
+            return {
+                "Final_Value": 0,
+                "Executed": executed,
+                "Rejected": rejected,
+                "Timeouts": timeouts,
+                "Status": "BANKRUPT",
+                "Sharpe_Ratio": metrics["Sharpe_Ratio"],
+                "Max_Drawdown": metrics["Max_Drawdown"],
+                "Total_Return_Pct": metrics["Total_Return_Pct"],
+            }
+
+        try:
+            start = time.time()
+            entscheidung = team_bot.get_action(tick, cash, inventory)
+            duration = time.time() - start
+        except Exception:
+            timeouts += 1
+            continue
+
+        if duration > 0.03:
+            timeouts += 1
+            continue
+
+        act = entscheidung.get("action")
+        qty = entscheidung.get("quantity", 0)
+        cost = qty * price
+
         if act == "BUY" and qty > 0:
-            cost = qty * price * (1 + fee)
-            if cash >= cost: cash -= cost; inventory += qty; executed += 1
+            new_inv = inventory + qty
+            if cash >= (cost * (1 + fee)) and abs(new_inv * price) <= current_buying_power:
+                cash -= cost * (1 + fee)
+                inventory = new_inv
+                executed += 1
+            else:
+                rejected += 1
+
         elif act == "SELL" and qty > 0:
-            cash += (qty * price) * (1 - fee); inventory -= qty; executed += 1
-    final = cash + inventory * test_data[-1]["close"]
-    return {"Final_Value": round(final, 2), "Return_%": round((final/100000-1)*100, 2), "Max_Drawdown_%": round((peak_v-min_v)/peak_v*100, 2), "Executed_Trades": executed, "Status": "COMPLETED"}
+            new_inv = inventory - qty
+            if abs(new_inv * price) <= current_buying_power:
+                cash += cost * (1 - fee)
+                inventory = new_inv
+                executed += 1
+            else:
+                rejected += 1
+
+    final_value = cash + (inventory * test_data[-1]["close"])
+    equity_curve.append(final_value)
+
+    metrics = calculate_metrics(equity_curve)
+
+    return {
+        "Final_Value": round(final_value, 2),
+        "Executed": executed,
+        "Rejected": rejected,
+        "Timeouts": timeouts,
+        "Status": "COMPLETED",
+        "Sharpe_Ratio": metrics["Sharpe_Ratio"],
+        "Max_Drawdown": metrics["Max_Drawdown"],
+        "Total_Return_Pct": metrics["Total_Return_Pct"],
+    }
+
 
 if __name__ == "__main__":
-    df = pd.read_csv(url, sep=";")
-    result = run_local_engine(Bot(), df.to_dict("records"))
-    print(result)
+    print("Loading training data...")
+    try:
+        df = pd.read_csv("train_data.csv", sep=";")
+        market_data = df.to_dict("records")
+    except FileNotFoundError:
+        print("ERROR: train_data.csv not found. Make sure it is in the same folder.")
+        exit()
+
+    print("Initializing your Bot...")
+    my_bot = bot_ema.Bot()
+
+    print("Starting backtest (this might take a few seconds)...")
+    result = run_local_engine(my_bot, market_data)
+
+    print("\n" + "=" * 30)
+    print("BACKTEST RESULTS")
+    print("=" * 30)
+    for key, value in result.items():
+        print(f"{key}: {value}")
+    print("=" * 30)
