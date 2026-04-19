@@ -1,18 +1,9 @@
-"""
-Backtest runner + EMA trailing-stop bot (converted from Untitled-1.ini).
-
-Run:  python Untitled-1.py
-
-Uses train_data.csv next to this script if present; otherwise loads from GitHub.
-"""
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
 import pandas as pd
 
-SCRIPT_DIR = Path(__file__).resolve().parent
 url = "https://raw.githubusercontent.com/kouroshmansouri21/test1/main/train_data.csv"
 
 
@@ -210,13 +201,8 @@ def run_local_engine(team_bot, test_data):
 # ── Entry point ──────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("Loading training data...")
-    local_csv = SCRIPT_DIR / "train_data.csv"
-    if local_csv.is_file():
-        df = pd.read_csv(local_csv, sep=";")
-        print(f"  Using: {local_csv}")
-    else:
-        df = pd.read_csv(url, sep=";")
-        print(f"  Using: {url}")
+    df = pd.read_csv(url, sep=";")
+    print(f"  Using: {url}")
 
     market_data = df.to_dict("records")
     print(f"  Loaded {len(market_data):,} ticks.\n")
@@ -233,5 +219,4 @@ if __name__ == "__main__":
     for key, value in result.items():
         label = f"{key}:".ljust(20)
         print(f"  {label} {value}")
-    print("=" * 36)
-
+    p
