@@ -1,9 +1,3 @@
-from __future__ import annotations
-import time
-import pandas as pd
-
-url = "https://raw.githubusercontent.com/kouroshmansouri21/test1/main/train_data.csv"
-
 class Bot:
     def __init__(self):
         self.ai_model = "Weekly_Trend_Follower_Optimized"
@@ -57,26 +51,3 @@ class Bot:
                     return {"action": "BUY", "quantity": qty}
 
         return {"action": "HOLD", "quantity": 0}
-
-def run_local_engine(team_bot, test_data):
-    cash, inventory, fee, executed = 100000.0, 0, 0.001, 0
-    peak_v, min_v = cash, cash
-    for tick in test_data:
-        price = tick["close"]
-        portfolio = cash + inventory * price
-        if portfolio <= 0: return {"Status": "BANKRUPT"}
-        peak_v, min_v = max(peak_v, portfolio), min(min_v, portfolio)
-        d = team_bot.get_action(tick, cash, inventory)
-        act, qty = d.get("action"), d.get("quantity", 0)
-        if act == "BUY" and qty > 0:
-            cost = qty * price * (1 + fee)
-            if cash >= cost: cash -= cost; inventory += qty; executed += 1
-        elif act == "SELL" and qty > 0:
-            cash += (qty * price) * (1 - fee); inventory -= qty; executed += 1
-    final = cash + inventory * test_data[-1]["close"]
-    return {"Final_Value": round(final, 2), "Return_%": round((final/100000-1)*100, 2), "Max_Drawdown_%": round((peak_v-min_v)/peak_v*100, 2), "Executed_Trades": executed, "Status": "COMPLETED"}
-
-if __name__ == "__main__":
-    df = pd.read_csv(url, sep=";")
-    result = run_local_engine(Bot(), df.to_dict("records"))
-    print(result)
