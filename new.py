@@ -216,7 +216,8 @@ if __name__ == "__main__":
     print("=" * 36)
     print("        BACKTEST RESULTS")
     print("=" * 36)
-    for key, value in result.items():
-        label = f"{key}:".ljust(20)
-        print(f"  {label} {value}")
-   print("=" * 36)
+for key, value in result.items():
+    label = f"{key}:".ljust(20)
+    print(f"  {label} {value}")
+
+print("=" * 36)
