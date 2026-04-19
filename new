@@ -3,7 +3,7 @@ Backtest runner + EMA trailing-stop bot (converted from Untitled-1.ini).
 
 Run:  python Untitled-1.py
 
-Place train_data.csv next to this script, or edit FALLBACK_CSV below.
+Uses train_data.csv next to this script if present; otherwise loads from GitHub.
 """
 from __future__ import annotations
 
@@ -13,17 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-# If train_data.csv is not next to this file, try this path (change if you move data).
-FALLBACK_CSV = Path(r"c:\Users\kouro\Desktop\Two Fairy OddParents\train_data.csv")
-
-
-def _resolve_csv_path() -> Path:
-    local = SCRIPT_DIR / "train_data.csv"
-    if local.is_file():
-        return local
-    if FALLBACK_CSV.is_file():
-        return FALLBACK_CSV
-    return local
+url = "https://raw.githubusercontent.com/kouroshmansouri21/test1/main/train_data.csv"
 
 
 class Bot:
@@ -219,20 +209,16 @@ def run_local_engine(team_bot, test_data):
 
 # ── Entry point ──────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    csv_path = _resolve_csv_path()
     print("Loading training data...")
-    if not csv_path.is_file():
-        print(
-            "ERROR: train_data.csv not found.\n"
-            f"  Tried: {SCRIPT_DIR / 'train_data.csv'}\n"
-            f"  Tried: {FALLBACK_CSV}\n"
-            "  Copy train_data.csv next to this script or update FALLBACK_CSV."
-        )
-        raise SystemExit(1)
+    local_csv = SCRIPT_DIR / "train_data.csv"
+    if local_csv.is_file():
+        df = pd.read_csv(local_csv, sep=";")
+        print(f"  Using: {local_csv}")
+    else:
+        df = pd.read_csv(url, sep=";")
+        print(f"  Using: {url}")
 
-    df = pd.read_csv(csv_path, sep=";")
     market_data = df.to_dict("records")
-    print(f"  Using: {csv_path}")
     print(f"  Loaded {len(market_data):,} ticks.\n")
 
     print("Initialising your Bot...")
@@ -248,3 +234,4 @@ if __name__ == "__main__":
         label = f"{key}:".ljust(20)
         print(f"  {label} {value}")
     print("=" * 36)
+
